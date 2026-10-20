@@ -1,219 +1,233 @@
-// 引入 MediaPipe
-import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3";
+// 1. 引入 AI 库
+import { FaceLandmarker, HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8";
+import * as Tone from "https://cdn.jsdelivr.net/npm/tone@14.8.49/+esm";
 
-// --- 1. 基础变量与配置 ---
 const canvas = document.getElementById('renderCanvas');
 const ctx = canvas.getContext('2d');
 const video = document.getElementById('webcam');
-const overlay = document.getElementById('audio-overlay');
+const startCameraBtn = document.getElementById('audio-overlay');
+
 const img = new Image();
-img.src = 'stained-glass.webp'; // 请确保图片文件名一致
+img.src = 'stained-glass.webp'; // 请确保文件名一致
 
-let glassRegions = []; // 存储玻璃块的多边形数据
-let handLandmarker;
+let handLandmarker = null;
+let faceLandmarker = null;
+let videoStream = null;
+let glassRegions = [];
 let lastVideoTime = -1;
+let currentHandPos = null;
+let currentFaceBox = null;
 
-// 音符映射 (五声音阶，避免刺耳)
 const notes = ["C4", "D4", "E4", "G4", "A4", "C5", "D5", "E5", "G5", "A5"];
-let synth;
+let synth = null;
 
-// --- 2. 图像与区域划分 ---
-img.onload = () => {
-    canvas.width = img.width;
-    canvas.height = img.height;
-    
-    // 【重点说明】这里为了演示，使用网格模拟玻璃块。
-    // 如果你有了真实的SVG坐标，请替换这里 glassRegions 的数据生成逻辑。
-    generateMockRegions();
-    
-    drawDarkState(); // 初始绘制昏暗状态
-    initMediaPipe(); // 启动摄像头和手势识别
-};
-
-// 生成模拟网格区域（用于跑通代码）
-function generateMockRegions() {
-    const cols = 8;
-    const rows = 8;
-    const w = canvas.width / cols;
-    const h = canvas.height / rows;
-
-    for (let i = 0; i < cols; i++) {
-        for (let j = 0; j < rows; j++) {
-            // 定义多边形顶点 (这里是一个四边形)
-            const points = [
-                { x: i * w, y: j * h },
-                { x: (i + 1) * w, y: j * h },
-                { x: (i + 1) * w, y: (j + 1) * h },
-                { x: i * w, y: (j + 1) * h }
-            ];
-
-            // 为每个区域分配一个随机音符
-            const note = notes[Math.floor(Math.random() * notes.length)];
-            
-            // 使用 Path2D 预构建路径，极大提升碰撞检测性能
-            const path = new Path2D();
-            path.moveTo(points[0].x, points[0].y);
-            for(let k=1; k<points.length; k++) path.lineTo(points[k].x, points[k].y);
-            path.closePath();
-
-            glassRegions.push({
-                id: `${i}-${j}`,
-                path: path,
-                note: note,
-                isLit: false,
-                brightness: 0 // 0 到 1
-            });
-        }
-    }
-}
-
-// --- 3. 渲染逻辑 ---
-
-// 绘制初始黑暗状态
-function drawDarkState() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    
-    // 底图
-    ctx.drawImage(img, 0, 0);
-    
-    // 覆盖一层深色遮罩模拟昏暗
-    ctx.fillStyle = 'rgba(10, 20, 20, 0.85)';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-}
-
-// 渲染循环
-function render() {
-    // 1. 绘制底图
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(img, 0, 0);
-    
-    // 2. 绘制昏暗遮罩
-    ctx.fillStyle = 'rgba(10, 20, 20, 0.85)';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    // 3. 检测手势
-    detectHand();
-
-    // 4. 绘制发光区域
-    glassRegions.forEach(region => {
-        // 如果被点亮，或者余辉未消散
-        if (region.brightness > 0) {
-            ctx.save();
-            
-            // 裁剪区域
-            ctx.clip(region.path);
-
-            // 获取原本的颜色（这里简单用颜色叠加，如果真实提取，可以直接绘制裁剪后的原图）
-            const alpha = region.brightness * 0.7;
-            ctx.fillStyle = `rgba(168, 216, 200, ${alpha})`; // 偏青绿色的亮光
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-            
-            // 绘制发光边缘 (Shadow Blur)
-            ctx.shadowBlur = 20 * region.brightness;
-            ctx.shadowColor = 'rgba(200, 255, 240, 1)';
-            // 重新描边该路径以产生发光
-            ctx.strokeStyle = `rgba(200, 255, 240, ${region.brightness})`;
-            ctx.lineWidth = 2;
-            ctx.stroke(region.path);
-
-            ctx.restore();
-
-            // 亮度缓慢衰减 (余辉效果)
-            region.brightness -= 0.02;
-            if (region.brightness < 0) region.brightness = 0;
-            if (region.brightness === 0) region.isLit = false;
-        }
-    });
-
-    requestAnimationFrame(render);
-}
-
-// --- 4. MediaPipe 手势追踪与音频 ---
-
-async function initMediaPipe() {
-    const vision = await FilesetResolver.forVisionTasks(
-        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
-    );
-    handLandmarker = await HandLandmarker.createFromOptions(vision, {
-        baseOptions: {
-            modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
-            delegate: "GPU"
-        },
-        runningMode: "VIDEO",
-        numHands: 1
-    });
-
-    // 启动摄像头
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-        video.srcObject = stream;
-        video.addEventListener("loadeddata", () => {
-            render(); // 启动渲染循环
+// 2. 初始化摄像头 - 核心修复流程
+async function initCamera() {
+    try {
+        const vision = await FilesetResolver.forVisionTasks(
+            "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm"
+        );
+        
+        // 使用 CPU 模式，避免 GPU 兼容性问题
+        handLandmarker = await HandLandmarker.createFromOptions(vision, {
+            baseOptions: {
+                modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+                delegate: "CPU"
+            },
+            runningMode: "VIDEO",
+            numHands: 1
         });
+        console.log("✅ 手部模型加载成功");
+
+        faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+            baseOptions: {
+                modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+                delegate: "CPU"
+            },
+            runningMode: "VIDEO",
+            numFaces: 1
+        });
+        console.log("✅ 面部模型加载成功");
+
+        // 请求摄像头，使用更明确的约束
+        videoStream = await navigator.mediaDevices.getUserMedia({ 
+            video: { 
+                width: { ideal: 1280 }, 
+                height: { ideal: 720 },
+                facingMode: "user"
+            },
+            audio: false
+        });
+        video.srcObject = videoStream;
+        console.log("✅ 摄像头流已获取");
+
+        // 【关键修复】等待 canplay 事件，确保视频真正可以播放后再调用 play()
+        video.addEventListener('canplay', () => {
+            console.log("视频已就绪，尝试播放...");
+            video.play().then(() => {
+                console.log("✅ 视频播放成功");
+                requestAnimationFrame(renderLoop);
+            }).catch(err => {
+                console.error("❌ 视频播放失败:", err);
+                // 播放失败时的友好提示
+                alert("无法播放摄像头画面，请确保已授予摄像头权限，并刷新页面重试。");
+            });
+        }, { once: true }); // 只触发一次
+
+        // 处理可能出现的错误
+        video.addEventListener('error', (e) => {
+            console.error("视频元素错误:", e);
+        });
+
+    } catch (error) {
+        console.error("❌ 初始化失败:", error);
+        alert("无法启动摄像头，请检查权限设置。");
     }
 }
 
-function detectHand() {
-    if (!handLandmarker || video.readyState !== 2) return;
-    
-    const startTimeMs = performance.now();
-    // 节流，不需要每一帧都进行复杂的模型推理
+// 3. 实时检测 (保持不变)
+function detectHandsAndFace() {
+    if (!handLandmarker || !faceLandmarker || video.readyState < 2) return;
     if (video.currentTime === lastVideoTime) return;
     lastVideoTime = video.currentTime;
+    const startTimeMs = performance.now();
 
-    const results = handLandmarker.detectForVideo(video, startTimeMs);
-    
-    if (results.landmarks && results.landmarks.length > 0) {
-        // 取食指指尖 (索引为8)
-        const indexTip = results.landmarks[0][8];
-        
-        // 坐标映射：摄像头是镜像的，x轴需要翻转
-        const handX = (1 - indexTip.x) * canvas.width;
-        const handY = indexTip.y * canvas.height;
+    const handResults = handLandmarker.detectForVideo(video, startTimeMs);
+    if (handResults.landmarks && handResults.landmarks.length > 0) {
+        const indexTip = handResults.landmarks[0][8];
+        const canvasX = (1 - indexTip.x) * canvas.width;
+        const canvasY = indexTip.y * canvas.height;
+        currentHandPos = { x: canvasX, y: canvasY };
+        checkCollision(canvasX, canvasY);
+    } else {
+        currentHandPos = null;
+    }
 
-        // 绘制一个视觉反馈点（可选，调试用）
-        // ctx.beginPath();
-        // ctx.arc(handX, handY, 10, 0, Math.PI * 2);
-        // ctx.fillStyle = 'red';
-        // ctx.fill();
-
-        checkCollision(handX, handY);
+    const faceResults = faceLandmarker.detectForVideo(video, startTimeMs);
+    if (faceResults.faceLandmarks && faceResults.faceLandmarks.length > 0) {
+        const nose = faceResults.faceLandmarks[0][1];
+        const faceX = (1 - nose.x) * canvas.width;
+        const faceY = nose.y * canvas.height;
+        currentFaceBox = { x: faceX - 50, y: faceY - 50, w: 100, h: 100 };
+    } else {
+        currentFaceBox = null;
     }
 }
 
 function checkCollision(x, y) {
-    // 使用 Path2D 的 isPointInPath 进行高效碰撞检测
     glassRegions.forEach(region => {
         if (ctx.isPointInPath(region.path, x, y)) {
-            // 如果进入了一个未点亮的区域
             if (!region.isLit) {
                 region.isLit = true;
-                region.brightness = 1.0; // 瞬间点亮
-                playNote(region.note);   // 触发声音
+                region.brightness = 1.0;
+                playNote(region.note);
             }
         }
     });
 }
 
-// --- 5. 音频逻辑 ---
-function initAudio() {
-    synth = new Tone.PolySynth(Tone.Synth, {
-        oscillator: { type: "sine" },
-        envelope: { attack: 0.02, decay: 0.3, sustain: 0.1, release: 1.5 } // 类似玻璃的余音
-    }).toDestination();
-    synth.volume.value = -8; // 调低总音量
+// 4. 渲染与网格 (保持不变)
+img.onload = () => {
+    canvas.width = img.width;
+    canvas.height = img.height;
+    generateMockRegions();
+    drawDarkState();
+};
+
+function generateMockRegions() {
+    const cols = 8, rows = 8;
+    const w = canvas.width / cols, h = canvas.height / rows;
+    for (let i = 0; i < cols; i++) {
+        for (let j = 0; j < rows; j++) {
+            const points = [
+                { x: i * w, y: j * h }, { x: (i + 1) * w, y: j * h },
+                { x: (i + 1) * w, y: (j + 1) * h }, { x: i * w, y: (j + 1) * h }
+            ];
+            const note = notes[Math.floor(Math.random() * notes.length)];
+            const path = new Path2D();
+            path.moveTo(points[0].x, points[0].y);
+            for (let k = 1; k < points.length; k++) path.lineTo(points[k].x, points[k].y);
+            path.closePath();
+            glassRegions.push({ id: `${i}-${j}`, path, note, isLit: false, brightness: 0 });
+        }
+    }
 }
 
+function drawDarkState() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0);
+    ctx.fillStyle = 'rgba(10, 20, 20, 0.65)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+}
+
+function renderLoop() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0);
+    ctx.fillStyle = 'rgba(10, 20, 20, 0.65)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    detectHandsAndFace();
+
+    glassRegions.forEach(region => {
+        if (region.brightness > 0) {
+            ctx.save();
+            ctx.clip(region.path);
+            ctx.fillStyle = `rgba(168, 216, 200, ${region.brightness * 0.7})`;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.shadowBlur = 20 * region.brightness;
+            ctx.shadowColor = 'rgba(200, 255, 240, 1)';
+            ctx.strokeStyle = `rgba(200, 255, 240, ${region.brightness})`;
+            ctx.lineWidth = 2;
+            ctx.stroke(region.path);
+            ctx.restore();
+            region.brightness -= 0.02;
+            if (region.brightness <= 0) {
+                region.brightness = 0;
+                region.isLit = false;
+            }
+        }
+    });
+
+    if (currentHandPos) {
+        ctx.beginPath();
+        ctx.arc(currentHandPos.x, currentHandPos.y, 10, 0, Math.PI * 2);
+        ctx.fillStyle = 'red';
+        ctx.fill();
+        ctx.strokeStyle = 'white';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+    }
+    
+    if (currentFaceBox) {
+        ctx.strokeStyle = 'rgba(0, 255, 0, 0.5)';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(currentFaceBox.x, currentFaceBox.y, currentFaceBox.w, currentFaceBox.h);
+    }
+
+    requestAnimationFrame(renderLoop);
+}
+
+// 5. 音频与入口 (保持不变)
 function playNote(note) {
-    if (synth) {
+    if (synth && Tone.getContext().state === 'running') {
         synth.triggerAttackRelease(note, "8n");
     }
 }
 
-// 用户点击遮罩层，启动 AudioContext 和摄像头授权
-overlay.addEventListener('click', async () => {
-    await Tone.start(); // 必须先由用户交互触发
-    initAudio();
-    overlay.style.opacity = '0';
-    setTimeout(() => overlay.remove(), 500); // 移除遮罩
+startCameraBtn.addEventListener('click', async () => {
+    try {
+        await Tone.start();
+        if (Tone.getContext().state !== 'running') await Tone.context.resume();
+        synth = new Tone.PolySynth(Tone.Synth, {
+            oscillator: { type: "sine" },
+            envelope: { attack: 0.02, decay: 0.3, sustain: 0.1, release: 1.5 }
+        }).toDestination();
+        synth.volume.value = -8;
+        console.log("✅ 音频已启动");
+        startCameraBtn.style.opacity = '0';
+        setTimeout(() => startCameraBtn.style.display = 'none', 500);
+        await initCamera();
+    } catch (error) {
+        console.error("❌ 启动失败:", error);
+    }
 });
