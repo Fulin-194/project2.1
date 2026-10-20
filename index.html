@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>可交互彩窗</title>
+    <!-- 引入外部 CSS -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <!-- 用于MediaPipe识别的隐藏视频 -->
+    <video id="webcam" autoplay playsinline></video>
+    
+    <div id="canvas-container">
+        <canvas id="renderCanvas"></canvas>
+        <!-- 浏览器要求用户交互后才能播放声音 -->
+        <div id="audio-overlay">
+            <h1>点击唤醒彩窗</h1>
+            <p>请允许摄像头权限，并将手放入画面中</p>
+        </div>
+    </div>
+
+    <!-- 引入 Tone.js (音频库) -->
+    <script src="https://cdn.jsdelivr.net/npm/@tonejs/tone@14.8.49/build/Tone.js"></script>
+    
+    <script type="module" src="script.js"></script>
+</body>
+</html>
