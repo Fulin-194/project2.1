@@ -6776,21 +6776,76 @@ async function initCamera() {
 // 初始化你的真实多边形数据
 function initGlassRegions() {
     glassRegions = [];
-    // 遍历你提供的数组
+    
+    // 采用网格采样法，在画布上打 40x40 个测试点 (1600个点，兼顾性能与准确度)
+    const density = 40; 
+    const totalPoints = density * density;
+    let samplePoints = [];
+    for (let i = 0; i < density; i++) {
+        for (let j = 0; j < density; j++) {
+            samplePoints.push({
+                x: (i + 0.5) * (canvas.width / density),
+                y: (j + 0.5) * (canvas.height / density)
+            });
+        }
+    }
+
+    let tempRegions = [];
+    let totalCoverage = 0;
+
+    // 第一遍遍历：计算每个形状的覆盖面积
     glassRegionsData.forEach((data, index) => {
-        // 将 SVG 路径字符串转为 Canvas 的 Path2D 对象
         const path = new Path2D(data.d);
-        const note = notes[index % notes.length];
+        let hitCount = 0;
         
-        glassRegions.push({
-            id: `region-${index}`,
+        // 快速估算面积占比
+        for (let p of samplePoints) {
+            if (ctx.isPointInPath(path, p.x, p.y)) {
+                hitCount++;
+            }
+        }
+        
+        const coverage = hitCount / totalPoints;
+        
+        // 剔除完全找不到的（可能是极小噪点或无效路径）
+        if (coverage < 0.0001) return; 
+
+        totalCoverage += coverage;
+        tempRegions.push({
             path: path,
-            note: note,
+            coverage: coverage,
+            index: index
+        });
+    });
+
+    // 计算所有有效块的平均面积占比
+    const averageCoverage = totalCoverage / tempRegions.length;
+
+    // 第二遍遍历：严格筛选
+    tempRegions.forEach((region) => {
+        // 🚨 核心过滤条件：
+        // 1. 超过画布总面积 2% 的（绝对是大外框/大背景）
+        // 2. 超过平均面积 4 倍的（过滤掉衣服、大长条等中等偏大的块）
+        const isTooLarge = region.coverage > 0.02;
+        const isWayAboveAverage = region.coverage > (averageCoverage * 4);
+        
+        // 如果你想只保留最碎的玻璃，甚至可以把 4 改成 2.5
+        if (isTooLarge || isWayAboveAverage) {
+            // console.log(`🗑️ 过滤大块: ${(region.coverage*100).toFixed(2)}%`);
+            return; 
+        }
+
+        // 保留小玻璃块
+        glassRegions.push({
+            id: `region-${region.index}`,
+            path: region.path,
+            note: notes[region.index % notes.length],
             isLit: false,
             brightness: 0
         });
     });
-    console.log(`✅ 成功加载 ${glassRegions.length} 个真实彩窗块`);
+    
+    console.log(`✅ 严格筛选完毕！只保留了 ${glassRegions.length} 个细碎小玻璃块。`);
 }
 
 function detectHands() {
