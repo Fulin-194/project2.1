@@ -84,3 +84,34 @@ canvas {
 #webcam:hover {
     opacity: 1;
 }
+/* 左上角计数模块样式 */
+#score-board {
+    position: fixed;
+    top: 20px;
+    left: 20px;
+    padding: 12px 24px;
+    background: rgba(10, 20, 20, 0.8); /* 半透明深色底 */
+    backdrop-filter: blur(8px); /* 背景模糊 */
+    color: #a8d8c8; /* 主题青绿色 */
+    font-size: 20px;
+    font-weight: bold;
+    letter-spacing: 2px;
+    border: 2px solid rgba(168, 216, 200, 0.4);
+    border-radius: 8px;
+    z-index: 1000; /* 确保在最上层 */
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+    pointer-events: none; /* 防止点击到它 */
+    transition: all 0.3s ease;
+}
+
+/* 数字部分高亮 */
+#score-count {
+    color: #fff;
+    font-size: 24px;
+    text-shadow: 0 0 10px rgba(200, 255, 240, 0.8);
+}
+
+#total-count {
+    font-size: 16px;
+    opacity: 0.7;
+}

@@ -6735,6 +6735,7 @@ let lastVideoTime = -1;
 let currentHandPos = null;
 let mousePos = null; // 添加鼠标备用测试
 let isDetecting = false;
+let litCount = 0;
 
 const notes = ["C4", "D4", "E4", "G4", "A4", "C5", "D5", "E5", "G5", "A5"];
 let synth = null;
@@ -6824,16 +6825,17 @@ function initGlassRegions() {
     // 第二遍遍历：严格筛选
     tempRegions.forEach((region) => {
         // 🚨 核心过滤条件：
-        // 1. 超过画布总面积 2% 的（绝对是大外框/大背景）
+        // 1. 超过画布总面积 10% 的（绝对是大外框/大背景）
         // 2. 超过平均面积 4 倍的（过滤掉衣服、大长条等中等偏大的块）
         const isTooLarge = region.coverage > 0.1;
         const isWayAboveAverage = region.coverage > (averageCoverage * 4);
         
-        // 如果你想只保留最碎的玻璃，甚至可以把 4 改成 2.5
         if (isTooLarge || isWayAboveAverage) {
-            // console.log(`🗑️ 过滤大块: ${(region.coverage*100).toFixed(2)}%`);
-            return; 
+             return; 
         }
+
+        // 👇 新增：如果面积小于平均面积的 30%，就判定为“极小碎块”
+        const isTiny = region.coverage < (averageCoverage * 0.3);
 
         // 保留小玻璃块
         glassRegions.push({
@@ -6841,11 +6843,14 @@ function initGlassRegions() {
             path: region.path,
             note: notes[region.index % notes.length],
             isLit: false,
-            brightness: 0
+            brightness: 0,
+            hasBeenCounted: false, // 给每个块打上标签，代表“还没计过数”
+            isTiny: isTiny         // 👈 新增：保存这个标记，供碰撞检测使用
         });
     });
     
     console.log(`✅ 严格筛选完毕！只保留了 ${glassRegions.length} 个细碎小玻璃块。`);
+    document.getElementById('total-count').innerText = glassRegions.length;
 }
 
 function detectHands() {
@@ -6871,19 +6876,40 @@ function detectHands() {
         isDetecting = false;
     }
 }
-
 function checkCollision(x, y) {
+    // 如果是指针/手的位置，我们可以设置一个容差半径（像素）
+    const tolerance = 20; 
+
     glassRegions.forEach(region => {
-        if (ctx.isPointInPath(region.path, x, y)) {
-            if (!region.isLit) {
-                region.isLit = true;
-                region.brightness = 1.0;
-                playNote(region.note);
+        let isHit = false;
+
+        // 如果是极小碎块，使用多点检测（十字范围）扩大命中率
+        if (region.isTiny) {
+            isHit = 
+                ctx.isPointInPath(region.path, x, y) || // 中心点
+                ctx.isPointInPath(region.path, x + tolerance, y) || // 右
+                ctx.isPointInPath(region.path, x - tolerance, y) || // 左
+                ctx.isPointInPath(region.path, x, y + tolerance) || // 下
+                ctx.isPointInPath(region.path, x, y - tolerance);   // 上
+        } else {
+            // 正常大小，使用精确检测
+            isHit = ctx.isPointInPath(region.path, x, y);
+        }
+
+        // 如果命中了，并且之前没亮起
+        if (isHit && !region.isLit) {
+            region.isLit = true;
+            region.brightness = 1.0;
+            playNote(region.note);
+            
+            if (!region.hasBeenCounted) {
+                region.hasBeenCounted = true;
+                litCount++;
+                document.getElementById('score-count').innerText = litCount;
             }
         }
     });
 }
-
 // 鼠标移动测试（可选）
 canvas.addEventListener('mousemove', (e) => {
     const rect = canvas.getBoundingClientRect();
