@@ -6826,7 +6826,7 @@ function initGlassRegions() {
         // 🚨 核心过滤条件：
         // 1. 超过画布总面积 2% 的（绝对是大外框/大背景）
         // 2. 超过平均面积 4 倍的（过滤掉衣服、大长条等中等偏大的块）
-        const isTooLarge = region.coverage > 0.02;
+        const isTooLarge = region.coverage > 0.1;
         const isWayAboveAverage = region.coverage > (averageCoverage * 4);
         
         // 如果你想只保留最碎的玻璃，甚至可以把 4 改成 2.5

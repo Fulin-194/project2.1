@@ -1,13 +1,22 @@
 /* --- 基础页面重置与居中 --- */
 body {
-    margin: 0;
-    padding: 0;
-    background-color: #111;
-    display: flex;
-    justify-content: center;
+    margin: 0; 
+    padding: 0; 
+    
+    /* 在图片上叠加一层 60% 透明度的黑色，让背景暗下来 */
+    background-image: 
+        linear-gradient(rgba(0, 0, 0, 0.6), rgba(0, 0, 0, 0.6)), 
+        url('bg.webp'); 
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    background-attachment: fixed;
+
+    display: flex; 
+    justify-content: center; 
     align-items: center;
-    height: 100vh;
-    overflow: hidden;
+    height: 100vh; 
+    overflow: hidden; 
     font-family: sans-serif;
 }
 
