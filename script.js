@@ -6727,59 +6727,52 @@ const video = document.getElementById('webcam');
 const startCameraBtn = document.getElementById('audio-overlay');
 
 const img = new Image();
-img.src = '新艺术风格常青藤肖像彩窗海报.webp'; // 注意后缀
+img.src = '新艺术风格常青藤肖像彩窗海报.webp'; // 确保图片名字正确
 
 let handLandmarker = null;
 let glassRegions = [];
 let lastVideoTime = -1;
 let currentHandPos = null;
-let mousePos = null; // 添加鼠标备用测试
 let isDetecting = false;
+
+// 计数与通关状态
 let litCount = 0;
+let isEnding = false;
+let endAnimationQueue = [];
+let currentEndDelay = 20;
 
 const notes = ["C4", "D4", "E4", "G4", "A4", "C5", "D5", "E5", "G5", "A5"];
 let synth = null;
 
 // ==========================================
-// 3. 初始化与渲染
+// 3. 【关键缺失点】图片加载与画布初始化
 // ==========================================
-async function initCamera() {
-    try {
-        const vision = await FilesetResolver.forVisionTasks(
-            "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
-        );
-        
-        handLandmarker = await HandLandmarker.createFromOptions(vision, {
-            baseOptions: {
-                modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
-                delegate: "CPU"
-            },
-            runningMode: "VIDEO",
-            numHands: 1
-        });
+img.onload = () => {
+    // 强制画布尺寸与图片尺寸绝对一致，防止坐标错位！
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    
+    // 初始化玻璃块数据
+    initGlassRegions(); 
+    
+    // 画一次初始的暗态画面
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = 'rgba(10, 20, 20, 0.7)'; // 暗态遮罩
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+};
 
-        const stream = await navigator.mediaDevices.getUserMedia({ 
-            video: { width: 1280, height: 720 } 
-        });
-        video.srcObject = stream;
-        
-        video.onloadedmetadata = () => {
-            video.play().then(() => {
-                console.log("✅ 视频播放成功");
-                requestAnimationFrame(renderLoop);
-            });
-        };
-    } catch (error) {
-        console.error("❌ 初始化失败:", error);
-    }
-}
+img.onerror = () => {
+    console.error("❌ 图片加载失败，请检查文件名 新艺术风格常青藤肖像彩窗海报.webp 是否存在！");
+};
 
-// 初始化你的真实多边形数据
+// ==========================================
+// 4. 初始化彩窗玻璃块 (过滤大框、识别碎块)
+// ==========================================
 function initGlassRegions() {
     glassRegions = [];
     
-    // 采用网格采样法，在画布上打 40x40 个测试点 (1600个点，兼顾性能与准确度)
-    const density = 40; 
+    // 采用 50x50 = 2500 个点进行高密度扫描，精准计算每个色块的像素面积
+    const density = 50; 
     const totalPoints = density * density;
     let samplePoints = [];
     for (let i = 0; i < density; i++) {
@@ -6794,66 +6787,188 @@ function initGlassRegions() {
     let tempRegions = [];
     let totalCoverage = 0;
 
-    // 第一遍遍历：计算每个形状的覆盖面积
+    // 第一遍：算出所有多边形的面积
     glassRegionsData.forEach((data, index) => {
         const path = new Path2D(data.d);
         let hitCount = 0;
-        
-        // 快速估算面积占比
         for (let p of samplePoints) {
-            if (ctx.isPointInPath(path, p.x, p.y)) {
-                hitCount++;
-            }
+            if (ctx.isPointInPath(path, p.x, p.y)) hitCount++;
         }
         
         const coverage = hitCount / totalPoints;
-        
-        // 剔除完全找不到的（可能是极小噪点或无效路径）
-        if (coverage < 0.0001) return; 
+        if (coverage < 0.0001) return; // 剔除极小噪点
 
         totalCoverage += coverage;
-        tempRegions.push({
-            path: path,
-            coverage: coverage,
-            index: index
-        });
+        tempRegions.push({ path: path, coverage: coverage, index: index });
     });
 
-    // 计算所有有效块的平均面积占比
     const averageCoverage = totalCoverage / tempRegions.length;
 
-    // 第二遍遍历：严格筛选
+    // 第二遍：绝对无情地过滤大块！
     tempRegions.forEach((region) => {
-        // 🚨 核心过滤条件：
-        // 1. 超过画布总面积 10% 的（绝对是大外框/大背景）
-        // 2. 超过平均面积 4 倍的（过滤掉衣服、大长条等中等偏大的块）
-        const isTooLarge = region.coverage > 0.1;
-        const isWayAboveAverage = region.coverage > (averageCoverage * 4);
+        // 🚨 核心逻辑：面积超过画布 1.5% 的，或者超过平均面积 3.5 倍的，直接判死刑！
+        // 你可以调整 0.015 (1.5%) 这个值，如果还是有长条漏网，改成 0.01
+        const isTooLarge = region.coverage > 0.015; 
+        const isWayAboveAverage = region.coverage > (averageCoverage * 3.5);
         
         if (isTooLarge || isWayAboveAverage) {
-             return; 
+             return; // 直接抛弃，不加进 glassRegions
         }
 
-        // 👇 新增：如果面积小于平均面积的 30%，就判定为“极小碎块”
-        const isTiny = region.coverage < (averageCoverage * 0.3);
-
-        // 保留小玻璃块
         glassRegions.push({
             id: `region-${region.index}`,
             path: region.path,
             note: notes[region.index % notes.length],
             isLit: false,
             brightness: 0,
-            hasBeenCounted: false, // 给每个块打上标签，代表“还没计过数”
-            isTiny: isTiny         // 👈 新增：保存这个标记，供碰撞检测使用
+            hasBeenCounted: false,
+            isTiny: region.coverage < (averageCoverage * 0.4) // 标记小碎块用于放大点击判定
         });
     });
     
-    console.log(`✅ 严格筛选完毕！只保留了 ${glassRegions.length} 个细碎小玻璃块。`);
+    console.log(`✅ 严格筛选完毕！只保留了 ${glassRegions.length} 个有效玻璃块。`);
     document.getElementById('total-count').innerText = glassRegions.length;
 }
 
-function detectHands() {
+// ==========================================
+// 5. 碰撞检测与通关判定
+// ==========================================
+function checkCollision(x, y) {
+    if (isEnding) return; 
+
+    const tolerance = 15; 
+
+    glassRegions.forEach(region => {
+        let isHit = false;
+
+        // 小碎块扩大判定范围
+        if (region.isTiny) {
+            isHit = 
+                ctx.isPointInPath(region.path, x, y) || 
+                ctx.isPointInPath(region.path, x + tolerance, y) || 
+                ctx.isPointInPath(region.path, x - tolerance, y) || 
+                ctx.isPointInPath(region.path, x, y + tolerance) || 
+                ctx.isPointInPath(region.path, x, y - tolerance);   
+        } else {
+            isHit = ctx.isPointInPath(region.path, x, y);
+        }
+
+        if (isHit && !region.isLit) {
+            region.isLit = true;
+            region.brightness = 1.0;
+            playNote(region.note);
+            
+            if (!region.hasBeenCounted) {
+                region.hasBeenCounted = true;
+                litCount++;
+                document.getElementById('score-count').innerText = litCount;
+
+                // 👇 👇 👇 修改这里 👇 👇 👇
+                // 当点亮数量达到 200 时，触发通关动画
+                if (litCount >= 200 && !isEnding) {
+                    startEndingAnimation();
+                }
+                // 👆 👆 👆 修改结束 👆 👆 👆
+            }
+        }
+    });
+}
+
+// ==========================================
+// 6. 通关动画逻辑
+// ==========================================
+function startEndingAnimation() {
+    isEnding = true;
+    console.log("🎉 触发通关动画！");
+    
+    endAnimationQueue = glassRegions.filter(region => !region.hasBeenCounted);
+    if (endAnimationQueue.length === 0) return;
+
+    function lightNextBlock() {
+        if (endAnimationQueue.length === 0) {
+            console.log("✨ 全部点亮！");
+            return;
+        }
+
+        const region = endAnimationQueue.shift();
+        if (!region.isLit) {
+            region.isLit = true;
+            region.brightness = 1.0;
+            region.hasBeenCounted = true;
+            litCount++;
+            const scoreElem = document.getElementById('score-count');
+            if(scoreElem) scoreElem.innerText = litCount;
+            playNote(notes[Math.floor(Math.random() * notes.length)]);
+        }
+
+        // 速度越来越快
+        currentEndDelay = Math.max(1, currentEndDelay * 0.80); 
+        setTimeout(lightNextBlock, currentEndDelay);
+    }
+    setTimeout(lightNextBlock, currentEndDelay);
+}
+
+// ==========================================
+// 7. 渲染循环
+// ==========================================
+function renderLoop() {
+    requestAnimationFrame(renderLoop);
+
+    // 1. 底图与遮罩
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = 'rgba(10, 20, 20, 0.7)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // 2. 检测手势
+    detectHands();
+
+    // 3. 渲染亮块
+    glassRegions.forEach(region => {
+        if (region.brightness > 0) {
+            ctx.save();
+            ctx.clip(region.path);
+
+            ctx.globalAlpha = region.brightness; 
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            ctx.globalAlpha = 1.0;
+
+            ctx.fillStyle = `rgba(255, 255, 255, ${region.brightness * 0.4})`;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            ctx.shadowBlur = 20 * region.brightness;
+            ctx.shadowColor = '#a8d8c8';
+            ctx.strokeStyle = `rgba(200, 255, 240, ${region.brightness})`;
+            ctx.lineWidth = 2;
+            ctx.stroke(region.path);
+            ctx.restore();
+
+            // 衰减逻辑
+            if (!isEnding) {
+                region.brightness -= 0.02;
+                if (region.brightness <= 0) {
+                    region.brightness = 0;
+                    region.isLit = false;
+                }
+            } else {
+                region.brightness = 1.0; // 通关时锁定亮度
+            }
+        }
+    });
+
+    // 4. 画红点
+    if (currentHandPos) {
+        ctx.beginPath();
+        ctx.arc(currentHandPos.x, currentHandPos.y, 10, 0, Math.PI * 2);
+        ctx.fillStyle = 'red';
+        ctx.fill();
+    }
+}
+
+// ==========================================
+// 8. 摄像头与手部识别初始化
+// ==========================================
+async function detectHands() {
     if (!handLandmarker || video.readyState < 2 || isDetecting) return;
     if (video.currentTime === lastVideoTime) return;
     lastVideoTime = video.currentTime;
@@ -6876,122 +6991,37 @@ function detectHands() {
         isDetecting = false;
     }
 }
-function checkCollision(x, y) {
-    // 如果是指针/手的位置，我们可以设置一个容差半径（像素）
-    const tolerance = 20; 
 
-    glassRegions.forEach(region => {
-        let isHit = false;
+async function initCamera() {
+    try {
+        const vision = await FilesetResolver.forVisionTasks(
+            "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
+        );
+        handLandmarker = await HandLandmarker.createFromOptions(vision, {
+            baseOptions: {
+                modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+                delegate: "CPU"
+            },
+            runningMode: "VIDEO",
+            numHands: 1
+        });
 
-        // 如果是极小碎块，使用多点检测（十字范围）扩大命中率
-        if (region.isTiny) {
-            isHit = 
-                ctx.isPointInPath(region.path, x, y) || // 中心点
-                ctx.isPointInPath(region.path, x + tolerance, y) || // 右
-                ctx.isPointInPath(region.path, x - tolerance, y) || // 左
-                ctx.isPointInPath(region.path, x, y + tolerance) || // 下
-                ctx.isPointInPath(region.path, x, y - tolerance);   // 上
-        } else {
-            // 正常大小，使用精确检测
-            isHit = ctx.isPointInPath(region.path, x, y);
-        }
-
-        // 如果命中了，并且之前没亮起
-        if (isHit && !region.isLit) {
-            region.isLit = true;
-            region.brightness = 1.0;
-            playNote(region.note);
-            
-            if (!region.hasBeenCounted) {
-                region.hasBeenCounted = true;
-                litCount++;
-                document.getElementById('score-count').innerText = litCount;
-            }
-        }
-    });
-}
-// 鼠标移动测试（可选）
-canvas.addEventListener('mousemove', (e) => {
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-    mousePos = {
-        x: (e.clientX - rect.left) * scaleX,
-        y: (e.clientY - rect.top) * scaleY
-    };
-    checkCollision(mousePos.x, mousePos.y);
-});
-canvas.addEventListener('mouseleave', () => { mousePos = null; });
-
-// ==========================================
-// 4. 核心循环
-// ==========================================
-img.onload = () => {
-    canvas.width = img.width;
-    canvas.height = img.height;
-    initGlassRegions(); // 初始化真实坐标
-    
-    // 画一次初始状态
-    ctx.drawImage(img, 0, 0);
-    ctx.fillStyle = 'rgba(10, 20, 20, 0.7)';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-};
-
-function renderLoop() {
-    requestAnimationFrame(renderLoop);
-
-    // 1. 底图和昏暗遮罩
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(img, 0, 0);
-    ctx.fillStyle = 'rgba(10, 20, 20, 0.7)';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    // 2. 检测手部
-    detectHands();
-
-    // 3. 渲染点亮的区域
-    glassRegions.forEach(region => {
-        if (region.brightness > 0) {
-            ctx.save();
-            ctx.clip(region.path);
-
-            // 透出原图颜色
-            ctx.globalAlpha = region.brightness; 
-            ctx.drawImage(img, 0, 0);
-            ctx.globalAlpha = 1.0;
-
-            // 高光
-            ctx.fillStyle = `rgba(255, 255, 255, ${region.brightness * 0.4})`;
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-            
-            // 边缘发光
-            ctx.shadowBlur = 20 * region.brightness;
-            ctx.shadowColor = '#a8d8c8';
-            ctx.strokeStyle = `rgba(200, 255, 240, ${region.brightness})`;
-            ctx.lineWidth = 2;
-            ctx.stroke(region.path);
-            ctx.restore();
-
-            // 衰减
-            region.brightness -= 0.02;
-            if (region.brightness <= 0) {
-                region.brightness = 0;
-                region.isLit = false;
-            }
-        }
-    });
-
-    // 4. 绘制手部红点
-    if (currentHandPos) {
-        ctx.beginPath();
-        ctx.arc(currentHandPos.x, currentHandPos.y, 10, 0, Math.PI * 2);
-        ctx.fillStyle = 'red';
-        ctx.fill();
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } });
+        video.srcObject = stream;
+        
+        video.onloadedmetadata = () => {
+            video.play().then(() => {
+                console.log("✅ 视频播放成功");
+                requestAnimationFrame(renderLoop); // 注意：这里启动了主循环
+            });
+        };
+    } catch (error) {
+        console.error("❌ 初始化失败:", error);
     }
 }
 
 // ==========================================
-// 5. 音频与启动
+// 9. 音频与启动
 // ==========================================
 function playNote(note) {
     if (synth && Tone.getContext().state === 'running') {
